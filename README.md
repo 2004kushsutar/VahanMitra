@@ -338,8 +338,6 @@ We welcome contributions! Areas for improvement:
 - **Socket.IO** - Real-time communication
 - **Tailwind CSS** - UI styling
 
-## 🎓 Citation
-
 ---
 
 **Made with ❤️ for smarter cities**
