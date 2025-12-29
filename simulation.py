@@ -355,3 +355,317 @@ def setTime():
 
 
 nextSignalVehicleCount = [0, 0, 0, 0]
+
+def detect_next_signal_vehicles():
+    global nextSignalVehicleCount
+
+    next_dir = directionNumbers[nextGreen]
+    count = 0
+
+    for lane in [0, 1, 2]:
+        for v in vehicles[next_dir][lane]:
+            if v.crossed == 0:
+                count += 1
+
+    nextSignalVehicleCount[nextGreen] = count
+    print(f"Detected vehicles count for next signal ({nextGreen}):", count)
+
+def detect_ambulance():
+    global ambulanceActive, ambulanceDirection
+
+    for i in range(noOfSignals):
+        dir_name = directionNumbers[i]
+        for lane in [0,1,2]:
+            for v in vehicles[dir_name][lane]:
+                if not ambulanceActive and v.vehicleClass == 'ambulance' and v.crossed == 0:
+                    ambulanceActive = True
+                    ambulanceDirection = i
+                    return
+                
+def give_ambulance_priority():
+    global currentGreen, nextGreen, savedGreen, savedNextGreen
+
+    if ambulanceActive and currentGreen != ambulanceDirection:
+        if savedGreen is None:
+            savedGreen = currentGreen
+            savedNextGreen = nextGreen
+
+        currentGreen = ambulanceDirection
+        nextGreen = (currentGreen + 1) % noOfSignals
+
+        signals[currentGreen].green = 15
+        signals[currentGreen].yellow = defaultYellow
+        signals[currentGreen].red = 0
+
+def check_ambulance_cleared():
+    global ambulanceActive, currentGreen, nextGreen
+    global savedGreen, savedNextGreen
+
+    if not ambulanceActive:
+        return
+
+    dir_name = directionNumbers[ambulanceDirection]
+
+    for lane in [0,1,2]:
+        for v in vehicles[dir_name][lane]:
+            if v.vehicleClass == 'ambulance' and v.crossed == 0:
+                return  # ambulance still present
+
+    # 🚑 ambulance cleared
+    ambulanceActive = False
+
+    # SAFETY CHECK
+    if savedGreen is None or savedNextGreen is None:
+        return
+
+    # restore signals safely
+    signals[currentGreen].green = defaultGreen
+    signals[currentGreen].yellow = defaultYellow
+    signals[currentGreen].red = defaultRed
+
+    currentGreen = savedGreen
+    nextGreen = savedNextGreen
+
+   
+def repeat():
+    global currentGreen, currentYellow, nextGreen
+
+     # 🛡 SAFETY CHECK (MUST BE BEFORE USING signals[currentGreen])
+    if currentGreen is None:
+        currentGreen = 0
+        nextGreen = 1
+
+    while(signals[currentGreen].green > 0):   # while the timer of current green signal is not zero
+        detect_ambulance()
+        give_ambulance_priority()
+        check_ambulance_cleared()
+
+        printStatus()
+        updateValues()
+
+        if (currentYellow == 0 and signals[currentGreen].green == PRE_DETECT_TIME):    # set time of next green signal 
+            threading.Thread(target=detect_next_signal_vehicles, daemon=True).start()
+            announce_next_signal_count()
+            setTime()
+        time.sleep(1)
+    currentYellow = 1   # set yellow signal on
+    vehicleCountTexts[currentGreen] = "0"
+    # reset stop coordinates of lanes and vehicles 
+    for i in range(0,3):
+        stops[directionNumbers[currentGreen]][i] = defaultStop[directionNumbers[currentGreen]]
+        for vehicle in vehicles[directionNumbers[currentGreen]][i]:
+            vehicle.stop = defaultStop[directionNumbers[currentGreen]]
+    while(signals[currentGreen].yellow>0):  # while the timer of current yellow signal is not zero
+        printStatus()
+        updateValues()
+        time.sleep(1)
+    currentYellow = 0   # set yellow signal off
+    
+    # reset all signal times of current signal to default times
+    signals[currentGreen].green = defaultGreen
+    signals[currentGreen].yellow = defaultYellow
+    signals[currentGreen].red = defaultRed
+       
+    currentGreen = nextGreen # set next signal as green signal
+    nextGreen = (currentGreen+1)%noOfSignals    # set next green signal
+    signals[nextGreen].red = signals[currentGreen].yellow+signals[currentGreen].green    # set the red time of next to next signal as (yellow time + green time) of next signal
+    repeat()     
+
+# Print the signal timers on cmd
+def printStatus():                                                                                           
+	for i in range(0, noOfSignals):
+		if(i==currentGreen):
+			if(currentYellow==0):
+				print(" GREEN TS",i+1,"-> r:",signals[i].red," y:",signals[i].yellow," g:",signals[i].green)
+			else:
+				print("YELLOW TS",i+1,"-> r:",signals[i].red," y:",signals[i].yellow," g:",signals[i].green)
+		else:
+			print("   RED TS",i+1,"-> r:",signals[i].red," y:",signals[i].yellow," g:",signals[i].green)
+	print()
+
+# Update values of the signal timers after every second
+def updateValues():
+    for i in range(noOfSignals):
+        # 🚑 During ambulance, ONLY decrement active green
+        if ambulanceActive:
+            if i == currentGreen:
+                if currentYellow == 0:
+                    signals[i].green = max(0, signals[i].green - 1)
+                else:
+                    signals[i].yellow = max(0, signals[i].yellow - 1)
+            continue
+
+        # 🚦 Normal operation
+        if i == currentGreen:
+            if currentYellow == 0:
+                signals[i].green = max(0, signals[i].green - 1)
+                signals[i].totalGreenTime += 1
+            else:
+                signals[i].yellow = max(0, signals[i].yellow - 1)
+        else:
+            signals[i].red = max(0, signals[i].red - 1)
+
+# Generating vehicles in the simulation
+def generateVehicles():
+    while(True):
+        vehicle_type = random.randint(0,30)
+        # 🚑 very rare ambulance (0.5%)
+        if random.randint(1, 200) == 1:
+            vehicle_type = 6   # ambulance
+        else:
+            vehicle_type = random.randint(0, 5)
+
+        if(vehicle_type==4):
+            lane_number = 0
+        else:
+            lane_number = random.randint(0,1) + 1
+        will_turn = 0
+        if(lane_number==2):
+            temp = random.randint(0,4)
+            if(temp<=2):
+                will_turn = 1
+            elif(temp>2):
+                will_turn = 0
+        temp = random.randint(0,999)
+        direction_number = 0
+        a = [400,800,900,1000]
+        if(temp<a[0]):
+            direction_number = 0
+        elif(temp<a[1]):
+            direction_number = 1
+        elif(temp<a[2]):
+            direction_number = 2
+        elif(temp<a[3]):
+            direction_number = 3
+        Vehicle(lane_number, vehicleTypes[vehicle_type], direction_number, directionNumbers[direction_number], will_turn)
+        time.sleep(0.75)
+
+def simulationTime():
+    global timeElapsed, simTime
+    while(True):
+        timeElapsed += 1
+        time.sleep(1)
+        if(timeElapsed==simTime):
+            totalVehicles = 0
+            print('Lane-wise Vehicle Counts')
+            for i in range(noOfSignals):
+                print('Lane',i+1,':',vehicles[directionNumbers[i]]['crossed'])
+                totalVehicles += vehicles[directionNumbers[i]]['crossed']
+            print('Total vehicles passed: ',totalVehicles)
+            print('Total time passed: ',timeElapsed)
+            print('No. of vehicles passed per unit time: ',(float(totalVehicles)/float(timeElapsed)))
+            os._exit(1)
+    
+
+class Main:
+    thread4 = threading.Thread(name="simulationTime",target=simulationTime, args=()) 
+    thread4.daemon = True
+    thread4.start()
+
+    thread2 = threading.Thread(name="initialization",target=initialize, args=())    # initialization
+    thread2.daemon = True
+    thread2.start()
+
+    # Colours 
+    black = (0, 0, 0)
+    white = (255, 255, 255)
+
+    # Screensize 
+    screenWidth = 1400
+    screenHeight = 800
+    screenSize = (screenWidth, screenHeight)
+
+    # Setting background image i.e. image of intersection
+    background = pygame.image.load('images/four-way.png')
+
+    screen = pygame.display.set_mode(screenSize)
+    pygame.display.set_caption("SIMULATION")
+
+    # Loading signal images and font
+    redSignal = pygame.image.load('images/signals/red.png')
+    yellowSignal = pygame.image.load('images/signals/yellow.png')
+    greenSignal = pygame.image.load('images/signals/green.png')
+    font = pygame.font.Font(None, 30)
+
+    thread3 = threading.Thread(name="generateVehicles",target=generateVehicles, args=())    # Generating vehicles
+    thread3.daemon = True
+    thread3.start()
+
+    while True:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                sys.exit()
+
+        screen.blit(background,(0,0))   # display background in simulation
+        for i in range(0,noOfSignals):  # display signal and set timer according to current status: green, yello, or red
+            if(i==currentGreen):
+                if(currentYellow==1):
+                    if(signals[i].yellow==0):
+                        signals[i].signalText = "STOP"
+                    else:
+                        signals[i].signalText = signals[i].yellow
+                    screen.blit(yellowSignal, signalCoods[i])
+                else:
+                    if(signals[i].green==0):
+                        signals[i].signalText = "SLOW"
+                    else:
+                        signals[i].signalText = signals[i].green
+                    screen.blit(greenSignal, signalCoods[i])
+            else:
+                if(signals[i].red<=10):
+                    if(signals[i].red==0):
+                        signals[i].signalText = "GO"
+                    else:
+                        signals[i].signalText = signals[i].red
+                else:
+                    signals[i].signalText = "---"
+                screen.blit(redSignal, signalCoods[i])
+
+        # if (currentYellow == 0 and
+        #     signals[currentGreen].green <= PRE_DETECT_TIME):
+        #         text = font.render("NEXT GREEN →", True, (0,255,0), white)
+        #         screen.blit(text,(signalCoods[nextGreen][0], signalCoods[nextGreen][1] - 30))
+
+        signalTexts = ["","","",""]
+
+        # display signal timer and vehicle count
+        for i in range(0,noOfSignals):  
+            signalTexts[i] = font.render(str(signals[i].signalText), True, white, black)
+            screen.blit(signalTexts[i],signalTimerCoods[i])
+
+            if i == currentGreen:
+                displayText = vehicles[directionNumbers[i]]['crossed']
+            elif i == nextGreen and signals[currentGreen].green <= PRE_DETECT_TIME:
+                displayText = f"(counts = {nextSignalVehicleCount[i]})"
+            else:
+                displayText = "---"
+
+            if i == nextGreen and signals[currentGreen].green <= PRE_DETECT_TIME:
+                vehicleCountTexts[i] = font.render(displayText, True, (0, 180, 0), white)
+            else:
+                vehicleCountTexts[i] = font.render(str(displayText), True, black, white)
+
+            screen.blit(vehicleCountTexts[i],vehicleCountCoods[i])
+
+            # 🚑 Ambulance emergency display
+        if ambulanceActive:
+            text = font.render(
+                "🚑 EMERGENCY VEHICLE PRIORITY",
+                    True,
+                    (255, 0, 0),
+                    white
+                )
+            screen.blit(text, (500, 50))
+
+
+        timeElapsedText = font.render(("Time Period: "+str(timeElapsed)), True, black, white)
+        screen.blit(timeElapsedText,(1100,50))
+
+        # display the vehicles
+        for vehicle in simulation:  
+            screen.blit(vehicle.currentImage, [vehicle.x, vehicle.y])
+            # vehicle.render(screen)
+            vehicle.move()
+        pygame.display.update()
+
+Main()
