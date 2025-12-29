@@ -198,3 +198,192 @@ def take_snapshot_for_direction(direction):
     except Exception as e:
         system.log(f"Snapshot error for {direction}: {str(e)}", "ERROR")
         return 0
+    
+# ============================================
+# MAIN TRAFFIC MONITORING LOOP
+# ============================================
+def traffic_monitor():
+    """Main loop for video processing and display"""
+    system.log("🎬 Starting Traffic Monitor...", "INFO")
+    system.log(f"Predictive snapshot mode: {config.SNAPSHOT_BEFORE_END/1000}s before green ends", "INFO")
+    
+    fps_start_time = time.time()
+    frame_counter = 0
+    
+    while True:
+        try:
+            current_time = time.time()
+            
+            # 1. Process snapshot requests from frontend
+            while len(system.snapshot_requests) > 0:
+                direction = system.snapshot_requests.pop(0)
+                count = take_snapshot_for_direction(direction)
+                
+                # Send the updated count to frontend
+                socketio.emit('snapshot_result', {
+                    'direction': direction,
+                    'count': count
+                })
+                system.log(f"📤 Sent snapshot result for {direction}: {count} vehicles", "INFO")
+            
+            # 2. Read frames for display only (no AI processing here)
+            frames = {}
+            for direction in config.VIDEO_DIRS:
+                frame = get_frame(system.videos[direction])
+                if frame is None:
+                    continue
+                
+                # Draw with last known counts
+                count = system.last_counts[direction]
+                frames[direction] = draw_detections(frame, None, count, direction)
+            
+            # 3. Create grid display
+            if config.DISPLAY_GRID and len(frames) == 4:
+                top_row = np.hstack((frames['north'], frames['east']))
+                bottom_row = np.hstack((frames['west'], frames['south']))
+                grid_view = np.vstack((top_row, bottom_row))
+                
+                # Add system info overlay
+                info_height = 60
+                info_panel = np.zeros((info_height, grid_view.shape[1], 3), dtype=np.uint8)
+                
+                # System stats
+                uptime = int(current_time - system.start_time)
+                total_vehicles = sum(system.last_counts.values())
+                
+                cv2.putText(info_panel, f"Uptime: {uptime}s", (10, 20),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                cv2.putText(info_panel, f"Total: {total_vehicles} vehicles", (10, 45),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+                cv2.putText(info_panel, f"FPS: {frame_counter/(current_time-fps_start_time):.1f}",
+                           (grid_view.shape[1] - 100, 20),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                cv2.putText(info_panel, "Mode: PREDICTIVE", (grid_view.shape[1] - 200, 45),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 165, 0), 1)
+                
+                final_view = np.vstack((info_panel, grid_view))
+                cv2.imshow("🚦 Traffic Control System - Predictive Mode", final_view)
+            
+            # 4. Frame rate control
+            frame_counter += 1
+            if cv2.waitKey(30) & 0xFF == ord('q'):
+                system.log("Shutdown signal received", "WARNING")
+                break
+            
+            # Reset FPS counter every second
+            if current_time - fps_start_time > 1.0:
+                frame_counter = 0
+                fps_start_time = current_time
+            
+            # Yield control to eventlet
+            socketio.sleep(0.01)
+            
+        except KeyboardInterrupt:
+            system.log("Keyboard interrupt received", "WARNING")
+            break
+        except Exception as e:
+            system.log(f"Error in main loop: {str(e)}", "ERROR")
+            socketio.sleep(1)
+    
+    # Cleanup
+    cleanup()
+
+# ============================================
+# CLEANUP
+# ============================================
+def cleanup():
+    """Release resources"""
+    system.log("Cleaning up resources...", "INFO")
+    
+    for direction, cap in system.videos.items():
+        cap.release()
+    
+    cv2.destroyAllWindows()
+    system.log("Cleanup complete", "SUCCESS")
+
+# ============================================
+# FLASK ROUTES
+# ============================================
+@app.route('/')
+def index():
+    return {
+        'status': 'online',
+        'system': 'Traffic Control Backend - Predictive Mode',
+        'version': '3.0',
+        'uptime': int(time.time() - system.start_time)
+    }
+
+@app.route('/status')
+def status():
+    return {
+        'counts': system.last_counts,
+        'total': sum(system.last_counts.values()),
+        'uptime': int(time.time() - system.start_time),
+        'mode': 'predictive'
+    }
+
+# ============================================
+# SOCKETIO EVENTS
+# ============================================
+@socketio.on('connect')
+def handle_connect():
+    system.log(f"Client connected: {request.sid if 'request' in dir() else 'unknown'}", "INFO")
+    # Send initial state
+    socketio.emit('traffic_update', system.last_counts)
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    system.log("Client disconnected", "INFO")
+
+@socketio.on('request_snapshot')
+def handle_snapshot_request(data):
+    """Handle snapshot request from frontend"""
+    direction = data.get('direction', '').lower()
+    
+    if direction not in config.VIDEO_DIRS:
+        system.log(f"Invalid direction in snapshot request: {direction}", "ERROR")
+        return
+    
+    system.log(f"Received snapshot request for {direction.upper()}", "INFO")
+    
+    # Add to queue to be processed in main loop
+    system.snapshot_requests.append(direction)
+
+# ============================================
+# MAIN ENTRY POINT
+# ============================================
+if __name__ == '__main__':
+    print("=" * 60)
+    print("🚦 ENHANCED TRAFFIC SIGNAL CONTROL SYSTEM")
+    print("=" * 60)
+    
+    # Initialize system
+    if not initialize_system():
+        system.log("Failed to initialize system. Exiting.", "ERROR")
+        sys.exit(1)
+    
+    # Start background task
+    socketio.start_background_task(traffic_monitor)
+    
+    print("-" * 60)
+    print(f"🌐 Server running on http://localhost:{config.APP_PORT}")
+    print(f"📊 Open the web interface to view live traffic data")
+    print(f"🎥 Video feeds: {', '.join(config.VIDEO_DIRS)}")
+    print(f"⏱️  Snapshot Mode: PREDICTIVE (3s before green ends)")
+    print("-" * 60)
+    print("Press 'Q' in the video window to shutdown")
+    print("=" * 60)
+    
+    # Run Flask app
+    try:
+        socketio.run(
+            app,
+            host='0.0.0.0',
+            port=config.APP_PORT,
+            debug=False,
+            use_reloader=False
+        )
+    except KeyboardInterrupt:
+        system.log("Server shutdown requested", "WARNING")
+    finally:
+        cleanup()
